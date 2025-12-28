@@ -10,7 +10,7 @@ export component MainWindow inherits Window {
     in-out property<float> target-temp-c: 21.7;   // ~71°F
     property<bool> showing-target-temp: false;
     in-out property<bool> use-fahrenheit: true;
-    in-out property<string> thermostat-state: "WAITING";
+    in-out property<string> thermostat-state: "INITIALIZING";
     
     // Temperature range constants (in Celsius)
     property<float> temp-min-c: 15.0;   // ~59°F

@@ -163,6 +163,10 @@ impl ThermostatState {
 
     /// Receives events from the UI thread and updates the state accordingly.
     pub fn receive_events(&mut self) {
+        if !(self.last_user_interaction_time.elapsed() > Duration::from_secs(5)) {
+            return;
+        }
+
         while let Ok(event) = self.ui_events_rx.try_recv() {
             match event {
                 UiEvent::ModeUpdate(mode) => self.mode = mode,
@@ -173,6 +177,7 @@ impl ThermostatState {
                 UiEvent::TargetTempUpdate(target_temp_c) => self.target_temp_c = target_temp_c,
             }
         }
+        self.last_user_interaction_time = Instant::now();
     }
 
     pub fn set_runtime_state(&mut self, runtime_state: ThermostatRuntimeState) {
@@ -239,6 +244,7 @@ impl ThermostatState {
     }
 
     pub fn run(self: &mut ThermostatState, controller: &mut Controller) {
+        self.receive_events();
         match self.runtime_state {
             ThermostatRuntimeState::Waiting => {
                 // Waiting isn't for resting, but if it happens to have rested long enough we don't need to rest again
@@ -293,6 +299,8 @@ impl ThermostatState {
                 }
             }
         }
+        // Update status message to the UI
+        self.actor_events_tx.send(BackendEvent::CurrentStateMessage(self.get_status_message()));
         self.last_run_finished_time = Instant::now();
     }
 }
