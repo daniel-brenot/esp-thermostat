@@ -4,16 +4,16 @@ use esp_idf_svc::hal::gpio::{Gpio21, InputOutput, PinDriver};
 use one_wire_bus::OneWire;
 
 /// Used to interface with the relays and thermostat sensor.
-pub struct Controller<'a> {
+pub struct Controller {
     is_cooling: bool,
     is_heating: bool,
     is_fan: bool,
-    one_wire: OneWire<PinDriver<'a, Gpio21, InputOutput>>,
+    one_wire: OneWire<PinDriver<'static, Gpio21, InputOutput>>,
     sensor: Option<Ds18b20>,
     last_temperature_c: Option<f32>,
 }
 
-impl<'a> Controller<'a> {
+impl Controller {
     /// Create a new controller with the DS18B20 temperature sensor on GPIO 21.
     pub fn new(pin: Gpio21) -> Result<Self, esp_idf_svc::sys::EspError> {
         // Configure the pin as open-drain for 1-Wire communication
@@ -42,7 +42,7 @@ impl<'a> Controller<'a> {
 
     /// Search for a DS18B20 sensor on the 1-Wire bus.
     fn find_ds18b20_sensor(
-        one_wire: &mut OneWire<PinDriver<'a, Gpio21, InputOutput>>,
+        one_wire: &mut OneWire<PinDriver<'static, Gpio21, InputOutput>>,
         delay: &mut Ets,
     ) -> Option<Ds18b20> {
         let mut search_state = None;
@@ -73,7 +73,7 @@ impl<'a> Controller<'a> {
 
     /// Read the temperature from the DS18B20 sensor and update the cached value.
     /// Returns the temperature in Celsius if successful.
-    pub fn read_temperature(&mut self) -> Option<f32> {
+    fn read_temperature(&mut self) -> Option<f32> {
         let sensor = self.sensor.as_ref()?;
         let mut delay = Ets;
 
@@ -101,14 +101,26 @@ impl<'a> Controller<'a> {
         }
     }
 
-    /// Get the last known temperature from the sensor in Fahrenheit.
+    /// Get the current temperature from the sensor in Celsius (base unit).
     /// This will trigger a new reading from the sensor.
+    pub fn get_temperature_c(&mut self) -> f32 {
+        self.read_temperature().unwrap_or(25.0) // Default to 25°C if no reading
+    }
+
+    /// Get the current temperature from the sensor in Fahrenheit.
+    /// This converts from the base Celsius reading.
     pub fn get_temperature_f(&mut self) -> f32 {
-        // Read new temperature (or use cached if read fails)
-        let temp_c = self.read_temperature().unwrap_or(25.0); // Default to 25°C if no reading
-        
-        // Convert Celsius to Fahrenheit: F = C * 9/5 + 32
-        temp_c * 9.0 / 5.0 + 32.0 
+        Self::celsius_to_fahrenheit(self.get_temperature_c())
+    }
+
+    /// Convert Celsius to Fahrenheit: F = C * 9/5 + 32
+    pub fn celsius_to_fahrenheit(celsius: f32) -> f32 {
+        celsius * 9.0 / 5.0 + 32.0
+    }
+
+    /// Convert Fahrenheit to Celsius: C = (F - 32) * 5/9
+    pub fn fahrenheit_to_celsius(fahrenheit: f32) -> f32 {
+        (fahrenheit - 32.0) * 5.0 / 9.0
     }
 
     pub fn set_cooling(&mut self, enabled: bool) {

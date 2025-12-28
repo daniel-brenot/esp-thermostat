@@ -17,8 +17,8 @@ pub enum UiEvent {
 
 #[derive(Debug, Clone)]
 pub enum BackendEvent {
-    // Event from backend to ui to update the current temperature
-    CurrentTempFUpdate(f32),
+    // Event from backend to ui to update the current temperature (in Celsius)
+    CurrentTempCUpdate(f32),
     // Event from backend to ui to update message for current state
     // Should be one of "Heating", "Cooling", "Resting for <duration>", "Waiting for <target temp>"
     CurrentStateMessage(String),

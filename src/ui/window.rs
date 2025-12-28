@@ -69,8 +69,8 @@ fn regiser_event_receiver_timer(window: &MainWindow, rx: Receiver<BackendEvent>)
         let window = window_weak.upgrade().unwrap();
         while let Ok(msg) = rx.try_recv() {
             match msg {
-                BackendEvent::CurrentTempFUpdate(temp) => {
-                    window.set_current_temp_f(temp);
+                BackendEvent::CurrentTempCUpdate(temp_c) => {
+                    window.set_current_temp_c(temp_c);
                 }
                 BackendEvent::CurrentStateMessage(message) => {
                     window.set_thermostat_state(SharedString::from(message));

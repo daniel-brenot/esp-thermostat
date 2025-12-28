@@ -15,8 +15,10 @@ const REST_DURATION_MINS: u64 = 30;
 pub struct ThermostatState {
     ui_events_rx: Receiver<UiEvent>,
     actor_events_tx: Sender<BackendEvent>,
-    current_temp_f: f32,
-    target_temp_f: f32,
+    /// Current temperature in Celsius (base unit)
+    current_temp_c: f32,
+    /// Target temperature in Celsius (base unit)
+    target_temp_c: f32,
     mode: ModeStatus,
     diff_mode: DiffStatus,
     rest_mode: RestStatus,
@@ -26,13 +28,18 @@ pub struct ThermostatState {
     runtime_state: ThermostatRuntimeState,
 
 
+    /// Used to track cumulative cooling duration since last resting
     total_cooling_duration: Duration,
+    /// unused, just nice to have a counterpart
     total_heating_duration: Duration,
     
     last_resting_start_time: Instant,
 
     /// Used to debounce user interaction and prevent rapid changes in mode.
-    last_user_interaction_time: Instant
+    last_user_interaction_time: Instant,
+
+    /// Used to track time passed since last run was called. Can be appended to durations
+    last_run_finished_time: Instant,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -49,8 +56,8 @@ impl ThermostatState {
         Self {
             ui_events_rx,
             actor_events_tx,
-            current_temp_f: 70.0,
-            target_temp_f: 70.0,
+            current_temp_c: 21.0,  // ~70°F
+            target_temp_c: 21.0,   // ~70°F
             mode: ModeStatus::Off,
             diff_mode: DiffStatus::Normal,
             rest_mode: RestStatus::Off,
@@ -61,27 +68,30 @@ impl ThermostatState {
             total_heating_duration: Duration::from_secs(0),
             last_resting_start_time: Instant::now(),
             last_user_interaction_time: Instant::now(),
+            last_run_finished_time: Instant::now(),
         }
     }
 
-    /// Get target temp needed to transition from waiting mode to heating or cooling mode
+    /// Get target temp needed to transition from waiting mode to heating or cooling mode (in Celsius)
     pub fn get_waiting_target_temp(&self) -> f32 {
         match self.mode {
             ModeStatus::Heat => {
                 match self.diff_mode {
-                    DiffStatus::Slow => self.target_temp_f - 1.9,
-                    DiffStatus::Normal => self.target_temp_f - 0.75,
-                    DiffStatus::Fast => self.target_temp_f - 0.5
+                    // Differential offsets in Celsius
+                    DiffStatus::Slow => self.target_temp_c - 1.0,    // ~1.9°F
+                    DiffStatus::Normal => self.target_temp_c - 0.4, // ~0.75°F
+                    DiffStatus::Fast => self.target_temp_c - 0.3    // ~0.5°F
                 }
             },
             ModeStatus::Cool => {
                 match self.diff_mode {
-                    DiffStatus::Slow => self.target_temp_f + 1.7,
-                    DiffStatus::Normal => self.target_temp_f + 1.2,
-                    DiffStatus::Fast => self.target_temp_f + 0.9
+                    // Differential offsets in Celsius
+                    DiffStatus::Slow => self.target_temp_c + 0.9,   // ~1.7°F
+                    DiffStatus::Normal => self.target_temp_c + 0.7, // ~1.2°F
+                    DiffStatus::Fast => self.target_temp_c + 0.5    // ~0.9°F
                 }
             },
-            ModeStatus::Off => self.current_temp_f,
+            ModeStatus::Off => self.current_temp_c,
         }
     }
 
@@ -99,12 +109,12 @@ impl ThermostatState {
         false
     }
 
-    /// Formats the temperature in fahrenheit or celcius and appends the unit
-    pub fn format_temp(&self, temp: f32) -> String {
+    /// Formats the temperature (base unit: Celsius) in the user's preferred unit
+    pub fn format_temp(&self, temp_c: f32) -> String {
         if self.use_fahrenheit {
-            format!("{}°F", temp)
+            format!("{:.1}°F", Controller::celsius_to_fahrenheit(temp_c))
         } else {
-            format!("{}°C", (temp - 32.0) * 5.0 / 9.0)
+            format!("{:.1}°C", temp_c)
         }
     }
 
@@ -146,8 +156,9 @@ impl ThermostatState {
         self.fan_mode = fan_mode;
     }
 
-    pub fn set_target_temp(&mut self, target_temp: f32) {
-        self.target_temp_f = target_temp;
+    /// Set target temperature in Celsius
+    pub fn set_target_temp(&mut self, target_temp_c: f32) {
+        self.target_temp_c = target_temp_c;
     }
 
     /// Receives events from the UI thread and updates the state accordingly.
@@ -159,7 +170,7 @@ impl ThermostatState {
                 UiEvent::DiffUpdate(diff_mode) => self.diff_mode = diff_mode,
                 UiEvent::RestUpdate(rest_mode) => self.rest_mode = rest_mode,
                 UiEvent::FanUpdate(fan_mode) => self.fan_mode = fan_mode,
-                UiEvent::TargetTempUpdate(target_temp) => self.target_temp_f = target_temp,
+                UiEvent::TargetTempUpdate(target_temp_c) => self.target_temp_c = target_temp_c,
             }
         }
     }
@@ -206,8 +217,19 @@ impl ThermostatState {
         }
     }
 
+    fn start_resting(&mut self, controller: &mut Controller) {
+        self.runtime_state = ThermostatRuntimeState::Resting;
+        self.last_resting_start_time = Instant::now();
+        controller.set_heating(false);
+        controller.set_cooling(false);
+        // Fan is always on during resting to make sure compressor thaws
+        controller.set_fan(true);
+    }
+
     fn start_waiting(&mut self, controller: &mut Controller) {
         self.runtime_state = ThermostatRuntimeState::Waiting;
+        self.last_resting_start_time = Instant::now();
+
         controller.set_heating(false);
         controller.set_cooling(false);
         // Turn fan off if in auto mode. Will always be turned back on when in heating or cooling mode.
@@ -219,14 +241,18 @@ impl ThermostatState {
     pub fn run(self: &mut ThermostatState, controller: &mut Controller) {
         match self.runtime_state {
             ThermostatRuntimeState::Waiting => {
+                // Waiting isn't for resting, but if it happens to have rested long enough we don't need to rest again
+                if self.last_resting_start_time.elapsed() > Duration::from_mins(REST_DURATION_MINS) {
+                    self.total_cooling_duration = Duration::from_secs(0);
+                }
                 match self.mode {
                     ModeStatus::Heat => {
-                        if self.current_temp_f < self.get_waiting_target_temp() {
+                        if self.current_temp_c < self.get_waiting_target_temp() {
                             self.start_heating(controller);
                         }
                     },
                     ModeStatus::Cool => {
-                        if self.current_temp_f > self.get_waiting_target_temp() {
+                        if self.current_temp_c > self.get_waiting_target_temp() {
                             self.start_cooling(controller);
                         }
                     },
@@ -236,17 +262,22 @@ impl ThermostatState {
                 }
             },
             ThermostatRuntimeState::Heating => {
-                if self.current_temp_f >= self.target_temp_f {
+                self.total_heating_duration += self.last_run_finished_time.elapsed();
+                if self.current_temp_c >= self.target_temp_c {
                     self.start_waiting(controller);
                 }
             },
             ThermostatRuntimeState::Cooling => {
-                if self.current_temp_f <= self.target_temp_f {
+                self.total_cooling_duration += self.last_run_finished_time.elapsed();
+                if self.should_rest() {
+                    self.start_resting(controller);
+                } else if self.current_temp_c <= self.target_temp_c {
                     self.start_waiting(controller);
                 }
             },
             ThermostatRuntimeState::Resting => {
                 if self.last_resting_start_time.elapsed() > Duration::from_mins(REST_DURATION_MINS) {
+                    self.total_cooling_duration = Duration::from_secs(0);
                     match self.mode {
                         ModeStatus::Heat => self.start_heating(controller),
                         ModeStatus::Cool => self.start_cooling(controller),
@@ -262,5 +293,6 @@ impl ThermostatState {
                 }
             }
         }
+        self.last_run_finished_time = Instant::now();
     }
 }
