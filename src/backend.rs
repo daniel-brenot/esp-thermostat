@@ -180,24 +180,6 @@ impl ThermostatState {
         self.last_user_interaction_time = Instant::now();
     }
 
-    pub fn set_runtime_state(&mut self, runtime_state: ThermostatRuntimeState) {
-        // We don't want to issue duplicate events to the controller
-        if self.runtime_state == runtime_state {
-            return;
-        }
-        match runtime_state {
-            ThermostatRuntimeState::Waiting => {
-                
-            }
-            ThermostatRuntimeState::Heating => {
-                todo!()
-            }
-            ThermostatRuntimeState::Cooling => todo!(),
-            ThermostatRuntimeState::Resting => todo!(),
-            ThermostatRuntimeState::Idle => todo!(),
-        }
-    }
-
     fn start_heating(&mut self, controller: &mut Controller) {
         self.runtime_state = ThermostatRuntimeState::Heating;
         controller.set_heating(true);
